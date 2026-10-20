@@ -80,6 +80,35 @@ export function Select({ options, value, onChange }: { options: ChoiceOption[]; 
   );
 }
 
+/** Several options at once (checkbox cards). */
+export function MultiCards({ options, value, onChange }: { options: ChoiceOption[]; value: string[]; onChange: (v: string[]) => void }) {
+  const warnings = options.filter((o) => o.warning && value.includes(o.value));
+  return (
+    <>
+      <div className="choice-grid" role="group">
+        {options.map((o) => {
+          const on = value.includes(o.value);
+          return (
+            <label key={o.value} className={`choice${on ? " is-selected" : ""}`}>
+              <input type="checkbox" checked={on} onChange={() => onChange(on ? value.filter((v) => v !== o.value) : [...value, o.value])} />
+              <span className="choice-head">
+                <span className="choice-label">{o.label}</span>
+                {o.badge && <span className="badge">{o.badge}</span>}
+              </span>
+              {o.description && <span className="choice-desc">{o.description}</span>}
+            </label>
+          );
+        })}
+      </div>
+      {warnings.map((o) => (
+        <div key={o.value} className="warning">
+          ⚠ {o.warning}
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <label className="toggle">

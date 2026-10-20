@@ -36,6 +36,9 @@ it.skipIf(!out)("dump generated repositories", () => {
   variants["azure-server-am"] = (c) => {
     c.components.prometheus.options.mode = "server";
     c.components.alertmanager.options.placement = "both";
+    c.components.robusta.enabled = true;
+    c.components.robusta.options.playbooks = "crashes,oom,nodes";
+    c.components.robusta.options.extraPlaybooks = "krr,popeye,changes";
   };
   variants["aws-beyla-basic"] = (c) => {
     c.platform = { cloud: "aws", region: "eu-central-1", currency: "USD" };

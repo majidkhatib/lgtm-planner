@@ -25,8 +25,17 @@ export type Question =
     })
   | (QuestionBase & { kind: "toggle" })
   | (QuestionBase & { kind: "number"; min?: number; max?: number; step?: number; unit?: string })
-  | (QuestionBase & { kind: "text"; placeholder?: string });
+  | (QuestionBase & { kind: "text"; placeholder?: string })
+  /** Several options; stored as a comma-separated list of values. */
+  | (QuestionBase & { kind: "multi"; options: ChoiceOption[] | ((cfg: PlannerConfig) => ChoiceOption[]) });
 
-export function resolveOptions(q: Question & { kind: "choice" }, cfg: PlannerConfig): ChoiceOption[] {
+/** Selected values of a "multi" question. */
+export const multiValues = (v: OptionValue | undefined): string[] =>
+  String(v ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+export function resolveOptions(q: Question & { kind: "choice" | "multi" }, cfg: PlannerConfig): ChoiceOption[] {
   return typeof q.options === "function" ? q.options(cfg) : q.options;
 }

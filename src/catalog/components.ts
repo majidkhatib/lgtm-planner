@@ -54,6 +54,39 @@ const ingressQuestion = (service: string): Question => ({
   placeholder: `${service.toLowerCase()}.observability.example.com`,
 });
 
+/**
+ * Robusta's built-in playbooks (chart value builtinPlaybooks, version 0.53), grouped for the planner.
+ * Unselected groups are listed in disabledPlaybooks.
+ */
+export const ROBUSTA_PLAYBOOK_GROUPS: { id: string; label: string; description: string; playbooks: string[]; default: boolean }[] = [
+  { id: "crashes", label: "Crashing pods", description: "CrashLoopBackOff and image pull errors, with the container's last logs.", playbooks: ["CrashLoopBackOff", "ImagePullBackOff", "KubePodCrashLooping"], default: true },
+  { id: "oom", label: "Out of memory", description: "OOMKilled containers and nodes, with memory graphs and logs.", playbooks: ["PodOOMKill", "HostOomKillDetected"], default: true },
+  { id: "evictions", label: "Evicted pods", description: "Why a pod was evicted, with pod and node events.", playbooks: ["PodEvicted"], default: true },
+  {
+    id: "workloads",
+    label: "Pods not ready / replicas missing",
+    description: "Investigates why pods aren't ready or replicas are missing (Deployments, StatefulSets, DaemonSets, HPA).",
+    playbooks: ["KubePodNotReady", "KubeContainerWaiting", "DeploymentReplicasMismatch", "KubeHpaReplicasMismatch", "KubeStatefulSetReplicasMismatch", "KubeStatefulSetUpdateNotRolledOut", "KubeDaemonSetRolloutStuck", "K8sMisscheduled"],
+    default: true,
+  },
+  { id: "jobs", label: "Failed jobs", description: "Job status, events and pod logs for failed or stuck jobs.", playbooks: ["KubeJobAlerts"], default: true },
+  {
+    id: "nodes",
+    label: "Node problems",
+    description: "Node not ready or unreachable, too many pods, high CPU, disk filling up.",
+    playbooks: ["KubeNodeNotReady", "KubeNodeUnreachable", "KubeletTooManyPods", "HostHighCpuLoad", "NodeFSSpaceAlerts"],
+    default: true,
+  },
+  { id: "capacity", label: "CPU throttling and overcommit", description: "Explains CPU throttling and CPU/memory overcommit, with graphs.", playbooks: ["CPUThrottlingHigh", "KubeCPUOvercommit", "KubeMemoryOvercommit"], default: true },
+  {
+    id: "platform",
+    label: "Kubernetes platform",
+    description: "Failing rule evaluation, aggregated API down, version mismatch between components.",
+    playbooks: ["PrometheusRuleFailures", "KubeAggregatedAPIDown", "KubeVersionMismatch"],
+    default: true,
+  },
+];
+
 export const COMPONENTS: ComponentDef[] = [
   // ---------------------------------------------------------------- metrics
   {
@@ -374,7 +407,7 @@ export const COMPONENTS: ComponentDef[] = [
     recommended: () => false,
     isRelevant: (cfg) => (cfg.signals.metrics && cfg.components.mimir?.enabled !== false) || (cfg.signals.traces && cfg.components.tempo?.enabled !== false),
     enabledNote: () =>
-      "Needs Linux nodes with kernel 5.8 or newer (BTF), hostPID and extra Linux capabilities (BPF, PERFMON, SYS_PTRACE…). Managed node images on AKS, EKS and GKE meet this; clusters with strict Pod Security (\"restricted\") need an exception for the ns-monitoring namespace.",
+      "Beyla's spans count toward the trace volume in the Tempo step. Needs Linux nodes with kernel 5.8 or newer (BTF), hostPID and extra Linux capabilities (BPF, PERFMON, SYS_PTRACE…). Managed node images on AKS, EKS and GKE meet this; clusters with strict Pod Security (\"restricted\") need an exception for the ns-monitoring namespace.",
     questions: [
       {
         kind: "choice",
@@ -401,7 +434,16 @@ export const COMPONENTS: ComponentDef[] = [
         options: [
           { value: "all", label: "All applications", badge: "Recommended", description: "Every pod except the system namespaces (kube-system, ns-monitoring, cert-manager…)." },
           { value: "namespaces", label: "Only selected namespaces", description: "Start small, e.g. with one team, and widen later." },
+          { value: "label", label: "Pods that opt in with a label", description: "Teams add a label to their pods (e.g. beyla.instrument: \"true\") and decide themselves. The safest rollout in shared clusters." },
         ],
+      },
+      {
+        kind: "text",
+        id: "optInLabel",
+        label: "Opt-in label",
+        placeholder: "beyla.instrument=true",
+        help: "key=value on the pod (pod template labels). Wildcards work in the value.",
+        visibleIf: (_c, o) => o.scope === "label",
       },
       {
         kind: "text",
@@ -418,8 +460,92 @@ export const COMPONENTS: ComponentDef[] = [
         help: "Shows who talks to whom and how many bytes cross availability zones, which helps find inter-zone costs. Adds about 20 series per pod.",
         visibleIf: (cfg, o) => cfg.signals.metrics && o.exports !== "traces",
       },
+      // ---- options that decide how many series (Mimir) and spans (Tempo) Beyla creates
+      {
+        kind: "choice",
+        id: "routes",
+        label: "URL paths: how are routes grouped? (biggest effect on Mimir)",
+        help: "Every distinct route becomes its own set of series. Without grouping, /orders/123 and /orders/124 are two routes, so IDs in URLs create millions of series.",
+        layout: "cards",
+        options: [
+          { value: "heuristic", label: "Automatic grouping", badge: "Recommended", description: "Path parts that look like IDs (numbers, UUIDs, hashes) become *, e.g. /orders/*. Your own patterns below win over it." },
+          { value: "wildcard", label: "Only your patterns", description: "Paths that don't match a pattern below are all counted as one route (/**). Lowest series count, but unknown routes are not told apart." },
+          {
+            value: "path",
+            label: "Full path (no grouping)",
+            description: "Every distinct URL path is its own route.",
+            warning: "Can create millions of series in Mimir (cardinality explosion). Only for services with a small, fixed set of URLs.",
+          },
+        ],
+        visibleIf: (_c, o) => o.exports !== "traces",
+      },
+      {
+        kind: "text",
+        id: "routePatterns",
+        label: "Your route patterns (optional)",
+        placeholder: "/api/orders/{id}, /api/users/{id}/cart",
+        help: "Comma-separated. {name} or :name marks a variable part. Matching paths get exactly this route name.",
+      },
+      {
+        kind: "toggle",
+        id: "ignoreHealth",
+        label: "Ignore health checks and metrics scrapes",
+        help: "Drops /health, /healthz, /ready, /readyz, /live, /livez, /ping and /metrics from metrics and traces. On busy clusters these probes are often the majority of all requests.",
+      },
+      {
+        kind: "text",
+        id: "ignoredPaths",
+        label: "More paths to ignore (optional)",
+        placeholder: "/favicon.ico, /static/*",
+        help: "Comma-separated, same pattern format as above.",
+      },
+      {
+        kind: "choice",
+        id: "traceProtocols",
+        label: "Which calls become spans? (biggest effect on Tempo)",
+        help: "One request often triggers many database or cache calls, and each one is a span. Limiting the protocols keeps the trace volume close to the number of requests.",
+        layout: "cards",
+        options: [
+          { value: "http-grpc", label: "HTTP and gRPC", badge: "Recommended", description: "Requests between services. About one span per call." },
+          { value: "http-grpc-sql", label: "HTTP, gRPC and SQL", description: "Adds database queries: very useful for slow-query analysis, but often 5–20 spans per request." },
+          { value: "all", label: "All protocols", description: "Adds Redis, Kafka, MongoDB, Memcached and GenAI calls.", warning: "Can multiply the trace volume (and Tempo cost) many times: every cache and queue call becomes a span." },
+        ],
+        visibleIf: (cfg, o) => cfg.signals.traces && o.exports !== "metrics",
+      },
+      {
+        kind: "choice",
+        id: "metricProtocols",
+        label: "Which calls produce metrics?",
+        help: "Metrics are aggregated per service and route, so extra protocols add far less than they do for traces.",
+        layout: "cards",
+        options: [
+          { value: "all", label: "All protocols", badge: "Recommended", description: "HTTP, gRPC, SQL, Redis, Kafka, MongoDB, Memcached, GenAI." },
+          { value: "http-grpc", label: "HTTP and gRPC only", description: "Fewest series; database and cache calls are not measured." },
+        ],
+        visibleIf: (cfg, o) => cfg.signals.metrics && o.exports !== "traces",
+      },
+      {
+        kind: "toggle",
+        id: "processMetrics",
+        label: "Process metrics (CPU, memory, threads per process)",
+        help: "Per-process resource usage of every instrumented app. Overlaps with container metrics from cAdvisor, and adds about 25 series per pod.",
+        visibleIf: (cfg, o) => cfg.signals.metrics && o.exports !== "traces",
+      },
     ],
-    defaults: (cfg) => ({ exports: cfg.signals.metrics && cfg.signals.traces ? "both" : cfg.signals.traces ? "traces" : "metrics", scope: "all", namespaces: "", network: false }),
+    defaults: (cfg) => ({
+      exports: cfg.signals.metrics && cfg.signals.traces ? "both" : cfg.signals.traces ? "traces" : "metrics",
+      scope: "all",
+      namespaces: "",
+      optInLabel: "beyla.instrument=true",
+      network: false,
+      routes: "heuristic",
+      routePatterns: "",
+      ignoreHealth: true,
+      ignoredPaths: "",
+      traceProtocols: "http-grpc",
+      metricProtocols: "all",
+      processMetrics: false,
+    }),
   },
   {
     id: "tempo",
@@ -691,15 +817,20 @@ export const COMPONENTS: ComponentDef[] = [
         kind: "choice",
         id: "placement",
         label: "Where should the Alertmanager run?",
+        help: "There is always one on the central cluster: the Mimir and Loki rulers send their alerts there. Remote clusters can get their own in addition.",
         layout: "cards",
-        visibleIf: (_c, o) => o.type === "standalone",
         options: (cfg) => {
           const agent = cfg.components.prometheus?.options.collector !== "prometheus" || cfg.components.prometheus?.options.mode !== "server";
-          const warn = agent ? "Prometheus on the remote clusters is in agent mode, which doesn't evaluate alert rules: nothing would reach this Alertmanager. Switch the metrics collector to server mode." : undefined;
+          const warn = agent ? "Prometheus on the remote clusters is in agent mode, which doesn't evaluate alert rules: nothing would reach the remote Alertmanagers. Switch the metrics collector to server mode." : undefined;
+          const central = cfg.components.alertmanager?.options.type === "mimir" ? "Mimir's built-in Alertmanager" : "a central Alertmanager";
           return [
-            { value: "central", label: "Central cluster", badge: "Default", description: "One Alertmanager for all clusters, fed by the Mimir/Loki rulers. One place for routing and silences." },
-            { value: "remote", label: "Remote clusters (next to Prometheus)", description: "Each remote cluster alerts on its own, even when the central cluster is unreachable. Routing and silences are per cluster.", warning: warn },
-            { value: "both", label: "Both", description: "Central Alertmanager for platform-wide rules, local ones for cluster-critical alerts that must work without the central cluster.", warning: warn },
+            { value: "central", label: "Central cluster", badge: "Default", description: `One place for routing and silences: ${central}, fed by the Mimir/Loki rulers for all clusters.` },
+            {
+              value: "both",
+              label: "Central + remote clusters",
+              description: `${central[0].toUpperCase()}${central.slice(1)} for platform-wide rules, plus a small Alertmanager on every remote cluster next to Prometheus, for cluster-critical alerts that must still work when the central cluster is unreachable.`,
+              warning: warn,
+            },
           ];
         },
       },
@@ -734,6 +865,42 @@ export const COMPONENTS: ComponentDef[] = [
           ];
         },
       },
+      {
+        kind: "choice",
+        id: "sink",
+        label: "Where should Robusta send its findings?",
+        help: "Robusta posts each enriched alert there (logs, events, graphs). Without a destination the playbooks run, but nobody sees the result.",
+        layout: "cards",
+        options: [
+          { value: "slack", label: "Slack", badge: "Most common", description: "A Slack app token and a channel. The token is read from the robusta secret." },
+          { value: "msteams", label: "Microsoft Teams", description: "An incoming webhook URL of a Teams channel, read from the robusta secret." },
+          { value: "none", label: "Decide later", description: "No destination yet. Add a sink to sinksConfig in the Robusta values file before relying on it." },
+        ],
+      },
+      { kind: "text", id: "slackChannel", label: "Slack channel", placeholder: "alerts-k8s", visibleIf: (_c, o) => o.sink === "slack" },
+      {
+        kind: "multi",
+        id: "playbooks",
+        label: "Built-in playbooks",
+        help: "Robusta ships these automations. Event-based ones watch Kubernetes directly; alert-based ones enrich the matching Prometheus alert. Every alert also gets the default enrichment (labels, links, graph).",
+        options: ROBUSTA_PLAYBOOK_GROUPS.map((g) => ({ value: g.id, label: g.label, description: g.description })),
+      },
+      {
+        kind: "multi",
+        id: "extraPlaybooks",
+        label: "Extra playbooks (optional)",
+        help: "Not active by default in Robusta. They add messages to the destination above.",
+        options: [
+          { value: "krr", label: "Weekly right-sizing report (KRR)", description: "Every Monday: CPU/memory requests and limits recommended from real usage, per workload. Needs the metrics in Mimir." },
+          { value: "popeye", label: "Weekly cluster health scan (Popeye)", description: "Every Monday: misconfigurations such as missing probes, unused objects and deprecated APIs." },
+          {
+            value: "changes",
+            label: "Change tracking",
+            description: "A message for every change to a Deployment, StatefulSet or DaemonSet (image, replicas, config), so alerts can be matched with what changed.",
+            warning: "Can be noisy in clusters with frequent deployments: consider a separate channel.",
+          },
+        ],
+      },
       { kind: "number", id: "alertsPerDay", label: "Alerts investigated per day", min: 0, max: 10000, help: "Used to estimate the LLM token cost." },
       {
         kind: "number",
@@ -746,7 +913,16 @@ export const COMPONENTS: ComponentDef[] = [
       },
       { kind: "number", id: "llmOutputPrice", label: "LLM price per million output tokens", unit: "USD", min: 0, step: 0.1 },
     ],
-    defaults: (cfg) => ({ llm: cfg.platform.cloud === "azure" ? "azure-openai" : cfg.platform.cloud === "aws" ? "bedrock" : "vertex", alertsPerDay: 50, llmInputPrice: 3, llmOutputPrice: 15 }),
+    defaults: (cfg) => ({
+      llm: cfg.platform.cloud === "azure" ? "azure-openai" : cfg.platform.cloud === "aws" ? "bedrock" : "vertex",
+      sink: "slack",
+      slackChannel: "",
+      playbooks: ROBUSTA_PLAYBOOK_GROUPS.filter((g) => g.default).map((g) => g.id).join(","),
+      extraPlaybooks: "",
+      alertsPerDay: 50,
+      llmInputPrice: 3,
+      llmOutputPrice: 15,
+    }),
   },
 ];
 
@@ -759,7 +935,7 @@ export function componentLabel(cfg: PlannerConfig, id: ComponentId): string {
     case "trace-collector":
       return o.collector === "otel" ? "OpenTelemetry Collector (traces)" : "Grafana Alloy (traces)";
     case "alertmanager":
-      return o.type === "mimir" ? "Alertmanager (in Mimir)" : `Alertmanager (${o.placement === "remote" ? "remote clusters" : o.placement === "both" ? "central + remote" : "central"})`;
+      return `Alertmanager (${o.type === "mimir" ? "in Mimir" : "central"}${o.placement === "both" ? " + remote" : ""})`;
     case "kafka":
       return `Kafka (${o.provider === "managed" ? "managed" : o.provider === "strimzi" ? "Strimzi" : "bundled broker"})`;
     default:
@@ -769,13 +945,12 @@ export function componentLabel(cfg: PlannerConfig, id: ComponentId): string {
 
 /** Whether a component has pods on the remote clusters with the current choices. */
 export function runsOnRemote(cfg: PlannerConfig, id: ComponentId): boolean {
-  if (id === "alertmanager") return cfg.components.alertmanager?.options.type === "standalone" && ["remote", "both"].includes(String(cfg.components.alertmanager?.options.placement));
+  if (id === "alertmanager") return cfg.components.alertmanager?.options.placement === "both";
   return COMPONENT_BY_ID[id].runsOn !== "central";
 }
 
 /** Whether a component has pods on the central cluster with the current choices. */
-export function runsOnCentral(cfg: PlannerConfig, id: ComponentId): boolean {
-  if (id === "alertmanager") return cfg.components.alertmanager?.options.type !== "standalone" || cfg.components.alertmanager?.options.placement !== "remote";
+export function runsOnCentral(_cfg: PlannerConfig, id: ComponentId): boolean {
   return COMPONENT_BY_ID[id].runsOn !== "remote";
 }
 

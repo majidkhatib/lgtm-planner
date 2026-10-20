@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { generateRepository } from "../generate/index";
+import { mergeValues } from "../generate/split";
 import { defaultConfig, resolvedConfig } from "../model/defaults";
 import type { PlannerConfig } from "../model/types";
 import { limitRows, nestKeys } from "./limits";
@@ -12,10 +13,13 @@ function cfg(fn: (c: PlannerConfig) => void = () => {}): PlannerConfig {
   return resolvedConfig(c);
 }
 
+/** Values as Helm sees them: helm/base first, then the cluster overlay. */
 function values(c: PlannerConfig, suffix: string): Record<string, any> {
-  const f = generateRepository(c).find((x) => x.path.startsWith("helm/central/prod/") && x.path.endsWith(suffix));
+  const files = generateRepository(c);
+  const f = files.find((x) => x.path.startsWith("helm/central/prod/") && x.path.endsWith(suffix));
   if (!f) throw new Error(`no file ${suffix}`);
-  return parse(f.content);
+  const base = files.find((x) => x.path === `helm/base${suffix}`);
+  return mergeValues(base ? parse(base.content) ?? {} : {}, parse(f.content) ?? {}) as Record<string, any>;
 }
 
 describe("tenant limits", () => {

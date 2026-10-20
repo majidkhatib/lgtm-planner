@@ -229,7 +229,10 @@ function centralSecrets(cfg: PlannerConfig, c: CentralCluster): SecretSpec[] {
     if (o.redis === "managed") s.push({ name: "langfuse-redis", keys: ["password"], note: "Langfuse Redis password" });
     if (o.clickhouse !== "bundled") s.push({ name: "langfuse-clickhouse", keys: ["password"], note: "Langfuse ClickHouse password" });
   }
-  if (ids.includes("robusta")) s.push({ name: "robusta", keys: ["signing-key", "llm-api-key"], note: "Robusta signing key and LLM API key" });
+  if (ids.includes("robusta")) {
+    const sink = cfg.components.robusta.options.sink;
+    s.push({ name: "robusta", keys: ["signing-key", "llm-api-key", ...(sink === "slack" ? ["slack-api-key"] : sink === "msteams" ? ["msteams-webhook-url"] : [])], note: "Robusta signing key, LLM API key and the Slack/Teams credential" });
+  }
   return s;
 }
 

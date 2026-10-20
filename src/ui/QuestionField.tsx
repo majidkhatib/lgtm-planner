@@ -1,6 +1,6 @@
-import { resolveOptions, type Question } from "../catalog/questions";
+import { multiValues, resolveOptions, type Question } from "../catalog/questions";
 import type { OptionValue, PlannerConfig } from "../model/types";
-import { ChoiceCards, Field, NumberInput, Select, TextInput, Toggle } from "./controls";
+import { ChoiceCards, Field, MultiCards, NumberInput, Select, TextInput, Toggle } from "./controls";
 
 /** Renders one data-driven question (used for component options). */
 export function QuestionField({
@@ -27,6 +27,15 @@ export function QuestionField({
           ) : (
             <ChoiceCards options={options} value={String(value)} onChange={onChange} />
           )}
+        </Field>
+      );
+    }
+    case "multi": {
+      const options = resolveOptions(q, cfg);
+      const selected = multiValues(value);
+      return (
+        <Field label={q.label} help={q.help}>
+          <MultiCards options={options} value={selected} onChange={(v) => onChange(options.map((o) => o.value).filter((x) => v.includes(x)).join(","))} />
         </Field>
       );
     }

@@ -189,11 +189,30 @@ function beylaConfig(cfg: PlannerConfig, t: Targets): string {
           .map((s) => s.trim())
           .filter(Boolean)
       : ["*"];
-  const instrument = (namespaces.length ? namespaces : ["*"])
-    .map((ns) => `    instrument {\n      kubernetes {\n        namespace = "${ns}"\n      }\n      exports = [${exportsList}]\n    }\n`)
-    .join("");
-  const exclude = SYSTEM_NAMESPACES.map((ns) => `    exclude_instrument {\n      kubernetes {\n        namespace = "${ns}"\n      }\n    }\n`).join("");
-  const features = ["application", "application_service_graph", ...(o.network ? ["network"] : [])];
+  const [labelKey, labelValue = "true"] = String(o.optInLabel || "beyla.instrument=true").split("=").map((s) => s.trim());
+  const selectors =
+    o.scope === "label"
+      ? [`pod_labels = { "${labelKey}" = "${labelValue}" }`]
+      : (namespaces.length ? namespaces : ["*"]).map((ns) => `namespace = "${ns}"`);
+  const instrument = selectors.map((sel) => `    instrument {\n      kubernetes {\n        ${sel}\n      }\n      exports = [${exportsList}]\n    }\n`).join("");
+  // One glob for all system namespaces ({a,b,c} matches any of them).
+  const exclude = `    exclude_instrument {\n      kubernetes {\n        namespace = "{${SYSTEM_NAMESPACES.join(",")}}"\n      }\n    }\n`;
+  const features = ["application", "application_service_graph", ...(o.network ? ["network"] : []), ...(o.processMetrics ? ["application_process"] : [])];
+  const list = (v: unknown) =>
+    String(v ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const quote = (xs: string[]) => xs.map((x) => `"${x}"`).join(", ");
+  const PROTOCOLS: Record<string, string[]> = { "http-grpc": ["http", "grpc"], "http-grpc-sql": ["http", "grpc", "sql"], all: ["*"] };
+  const ignored = [...(o.ignoreHealth === false ? [] : ["/health", "/healthz", "/ready", "/readyz", "/live", "/livez", "/ping", "/metrics"]), ...list(o.ignoredPaths)];
+  const patterns = list(o.routePatterns);
+  // Route grouping: decides how many series Beyla creates per service.
+  const routes = `
+  routes {
+    unmatched = "${metrics ? String(o.routes || "heuristic") : "heuristic"}"
+${patterns.length ? `    patterns  = [${quote(patterns)}]\n` : ""}${ignored.length ? `    ignored_patterns = [${quote(ignored)}]\n    ignore_mode      = "all"\n` : ""}  }
+`;
   // With a local trace collector, Beyla's spans go through it (same sampling and batching as SDK traces).
   const localCollector = cfg.components["trace-collector"].enabled;
   const traceTarget = localCollector ? "otelcol.exporter.otlp.local.input" : "otelcol.processor.batch.beyla.input";
@@ -209,16 +228,21 @@ beyla.ebpf "default" {
 
   discovery {
 ${instrument}${exclude}  }
-${metrics ? `
+${routes}${metrics ? `
   metrics {
-    features        = [${features.map((f) => `"${f}"`).join(", ")}]
-    exemplar_filter = "trace_based"
+    features         = [${quote(features)}]
+    instrumentations = [${quote(PROTOCOLS[String(o.metricProtocols)] ?? ["*"])}]
+    exemplar_filter  = "trace_based"
   }
 ` : ""}${traces ? `
-  output {
-    traces = [${traceTarget}]
+  traces {
+    instrumentations = [${quote(PROTOCOLS[String(o.traceProtocols)] ?? ["http", "grpc"])}]
   }
-` : ""}}
+` : ""}
+  // Required block; without a traces destination, spans are dropped.
+  output {
+${traces ? `    traces = [${traceTarget}]\n` : ""}  }
+}
 ${metrics ? `
 prometheus.scrape "beyla" {
   targets      = beyla.ebpf.default.targets
@@ -293,7 +317,7 @@ export function prometheusAgentValues(cfg: PlannerConfig, env: string, t: Target
   const w = remoteWorkloads(cfg, env, "prometheus")[0];
   const scrape = `${Number(cfg.components.prometheus.options.scrapeInterval) || 30}s`;
   const server = cfg.components.prometheus.options.mode === "server";
-  const localAm = cfg.components.alertmanager.enabled && cfg.components.alertmanager.options.type === "standalone" && ["remote", "both"].includes(String(cfg.components.alertmanager.options.placement));
+  const localAm = cfg.components.alertmanager.enabled && cfg.components.alertmanager.options.placement === "both";
   return {
     fullnameOverride: "prometheus",
     server: {
@@ -425,10 +449,10 @@ function otelCollectorValues(cfg: PlannerConfig, env: string, t: Targets): Value
   };
 }
 
-/** Alertmanager on a remote cluster (placement "remote" or "both"), receiving alerts from the local Prometheus. */
+/** Alertmanager on a remote cluster (placement "both"), receiving alerts from the local Prometheus. */
 export function remoteAlertmanagerValues(cfg: PlannerConfig, env: string): Values | null {
   const am = cfg.components.alertmanager;
-  if (!am.enabled || am.options.type !== "standalone" || !["remote", "both"].includes(String(am.options.placement))) return null;
+  if (!am.enabled || am.options.placement !== "both") return null;
   const w = remoteWorkloads(cfg, env, "alertmanager")[0];
   return {
     fullnameOverride: "alertmanager",

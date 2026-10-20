@@ -15,6 +15,8 @@ export const ASSUMPTIONS = {
   observationsPerLlmCall: 5,
   beylaSeriesPerPod: 60, // RED histograms per service and route
   beylaNetworkSeriesPerPod: 20,
+  beylaProcessSeriesPerPod: 25,
+  beylaPathModeFactor: 10, // no route grouping: assumed 10× the series
 };
 
 export interface DerivedInputs {
@@ -54,7 +56,10 @@ export function deriveInputs(cfg: PlannerConfig, env: string): DerivedInputs {
   const metricsGeneratorSeries = generatorOn ? Math.round(baseSeries * 0.05) : 0;
   const b = cfg.components.beyla;
   const beylaMetrics = cfg.signals.metrics && b?.enabled === true && b.options.exports !== "traces";
-  const perPod = ASSUMPTIONS.beylaSeriesPerPod + (b?.options.network ? ASSUMPTIONS.beylaNetworkSeriesPerPod : 0);
+  const perPod =
+    ASSUMPTIONS.beylaSeriesPerPod * (b?.options.routes === "path" ? ASSUMPTIONS.beylaPathModeFactor : 1) +
+    (b?.options.network ? ASSUMPTIONS.beylaNetworkSeriesPerPod : 0) +
+    (b?.options.processMetrics ? ASSUMPTIONS.beylaProcessSeriesPerPod : 0);
   const beylaSeries = beylaMetrics ? Math.round(v.metrics.nodes * v.metrics.podsPerNode * perPod) : 0;
   const activeSeries = Math.round(baseSeries + metricsGeneratorSeries + beylaSeries);
 

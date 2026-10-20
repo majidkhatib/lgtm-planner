@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { CLOUDS } from "../../catalog/clouds";
 import { componentLabel, relevantComponents, runsOnCentral, runsOnRemote } from "../../catalog/components";
-import { resolveOptions, type Question } from "../../catalog/questions";
+import { multiValues, resolveOptions, type Question } from "../../catalog/questions";
 import { STORAGE_CLASSES } from "../../catalog/storage";
 import { centralClusters, centralWorkloads, hostOf, remoteClusters, remoteWorkloads } from "../../generate/common";
 import { recommendNodePools } from "../../generate/nodepools";
@@ -41,6 +41,10 @@ const rate = (mb: number) => (mb >= 1 ? `${fmt(mb)} MB/s` : `${fmt(mb * 1024)} K
 /** Human-readable answer of one component question. */
 function answer(q: Question, cfg: PlannerConfig, value: OptionValue): string {
   if (q.kind === "choice") return resolveOptions(q, cfg).find((o) => o.value === String(value))?.label ?? String(value);
+  if (q.kind === "multi") {
+    const labels = resolveOptions(q, cfg).filter((o) => multiValues(value).includes(o.value)).map((o) => o.label);
+    return labels.length ? labels.join(", ") : "none";
+  }
   if (q.kind === "toggle") return value ? "yes" : "no";
   if (q.kind === "number") return `${value}${q.unit ? ` ${q.unit}` : ""}`;
   return String(value || "default");

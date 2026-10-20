@@ -68,6 +68,8 @@ export function isEnabled(cfg: PlannerConfig, id: ComponentId): boolean {
 export function effectiveOptions(cfg: PlannerConfig, id: ComponentId): Record<string, OptionValue> {
   const def = COMPONENT_BY_ID[id];
   const merged: Record<string, OptionValue> = { ...def.defaults(cfg), ...(cfg.components[id]?.options ?? {}) };
+  // Older configurations could run Alertmanager on remote clusters only; there is always a central one now.
+  if (id === "alertmanager" && merged.placement === "remote") merged.placement = "both";
   for (const q of def.questions) {
     if (q.kind !== "choice") continue;
     const allowed = resolveOptions(q, cfg).map((o) => o.value);

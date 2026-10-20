@@ -121,7 +121,7 @@ ${multiRegionSection(cfg, central)}## Secrets to create
 
 Names in the secret store are \`<cluster>--<secret>--<key>\`.
 
-- Every central cluster: ${["grafana-admin (admin-user, admin-password)", cfg.connectivity.auth === "basic" ? "gateway-htpasswd (.htpasswd: one line per tenant, created with `htpasswd -nbB <tenant> <password>`)" : "", cfg.connectivity.auth === "mtls" ? "remote-clusters-ca (ca.crt)" : "", cfg.connectivity.tls === "existing" ? "wildcard-tls (tls.crt, tls.key)" : "", cfg.components.langfuse.enabled ? "langfuse (salt, nextauth-secret, encryption-key: `openssl rand -hex 32`)" : "", cfg.components.robusta.enabled ? "robusta (signing-key, llm-api-key)" : ""].filter(Boolean).join("; ")}
+- Every central cluster: ${["grafana-admin (admin-user, admin-password)", cfg.connectivity.auth === "basic" ? "gateway-htpasswd (.htpasswd: one line per tenant, created with `htpasswd -nbB <tenant> <password>`)" : "", cfg.connectivity.auth === "mtls" ? "remote-clusters-ca (ca.crt)" : "", cfg.connectivity.tls === "existing" ? "wildcard-tls (tls.crt, tls.key)" : "", cfg.components.langfuse.enabled ? "langfuse (salt, nextauth-secret, encryption-key: `openssl rand -hex 32`)" : "", cfg.components.robusta.enabled ? `robusta (signing-key, llm-api-key${cfg.components.robusta.options.sink === "slack" ? ", slack-api-key" : cfg.components.robusta.options.sink === "msteams" ? ", msteams-webhook-url" : ""})` : ""].filter(Boolean).join("; ")}
 - Every remote cluster: remote-write (cluster, tenant${cfg.connectivity.auth === "basic" ? ", password" : ""})${cfg.connectivity.auth === "mtls" ? "; remote-write-mtls (tls.crt, tls.key, ca.crt)" : ""}
 
 ## Placeholders to fill

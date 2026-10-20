@@ -91,7 +91,8 @@ export function centralReleases(cfg: PlannerConfig, c: CentralCluster): Release[
 export function remoteReleases(cfg: PlannerConfig, g: RemoteGroup, cluster?: string): Release[] {
   const rel: Release[] = addonReleases(cfg, null);
   for (const comp of designComponents(cfg).filter((x) => isRemote(x.id, cfg))) {
-    const chart = chartFor(cfg, comp.id);
+    // Remote Alertmanagers are always the standalone chart (also when the central one is Mimir's).
+    const chart = comp.id === "alertmanager" ? CHARTS.alertmanager : chartFor(cfg, comp.id);
     if (!chart) continue;
     const files = [`helm/remote/${g.dir}/${comp.id}/values.yaml`];
     if (comp.id === "prometheus" && cfg.components.prometheus.options.collector !== "alloy") files.push(`helm/remote/${g.dir}/clusters/${cluster ?? "{{name}}"}/prometheus.yaml`);

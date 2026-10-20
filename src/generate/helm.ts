@@ -1,5 +1,8 @@
 import { stringify } from "yaml";
 import { limitRows, nestKeys, tenantOverrides } from "../limits/limits";
+import { commonValues, mergeValues, probeCluster, valuesDiff } from "./split";
+import { ROBUSTA_PLAYBOOK_GROUPS } from "../catalog/components";
+import { multiValues } from "../catalog/questions";
 import type { ComponentId, OptionValue, PlannerConfig } from "../model/types";
 import type { SizedWorkload } from "../sizing/engine";
 import { autoscalingSnippet } from "./autoscaling";
@@ -430,13 +433,52 @@ function robustaValues(cfg: PlannerConfig, c: CentralCluster): { base: Values; o
     openai: "<model-name>",
     "self-hosted": "openai/<model-name>",
   };
+  const o = cfg.components.robusta.options;
+  const secretEnv = (name: string, key: string) => ({ name, valueFrom: { secretKeyRef: { name: "robusta", key } } });
+  const sink = String(o.sink);
+  const sinkName = sink === "slack" ? "main_slack_sink" : "main_ms_teams_sink";
+  const sinksConfig =
+    sink === "slack"
+      ? [{ slack_sink: { name: sinkName, api_key: "{{ env.SLACK_API_KEY }}", slack_channel: String(o.slackChannel || "<slack-channel>") } }]
+      : sink === "msteams"
+        ? [{ ms_teams_sink: { name: sinkName, webhook_url: "{{ env.MSTEAMS_WEBHOOK_URL }}" } }]
+        : [];
+  // Built-in playbooks: the groups the user didn't select are disabled by name.
+  const selected = multiValues(o.playbooks);
+  const disabledPlaybooks = ROBUSTA_PLAYBOOK_GROUPS.filter((g) => !selected.includes(g.id)).flatMap((g) => g.playbooks);
+  const extras = multiValues(o.extraPlaybooks);
+  const weekly = { on_schedule: { fixed_delay_repeat: { repeat: -1, seconds_delay: 604800 } } };
+  const toSink = sinksConfig.length ? { sinks: [sinkName] } : {};
+  const namedCustomPlaybooks: Values = {
+    ...(extras.includes("krr") ? { "weekly-krr": { triggers: [weekly], actions: [{ krr_scan: {} }], ...toSink } } : {}),
+    ...(extras.includes("popeye") ? { "weekly-popeye": { triggers: [weekly], actions: [{ popeye_scan: {} }], ...toSink } } : {}),
+    ...(extras.includes("changes")
+      ? {
+          "change-tracking": {
+            triggers: [{ on_deployment_all_changes: {} }, { on_statefulset_all_changes: {} }, { on_daemonset_all_changes: {} }],
+            actions: [{ resource_babysitter: {} }],
+            ...toSink,
+          },
+        }
+      : {}),
+  };
   return {
-    base: { clusterName: c.name, enableHolmesGPT: true, enablePrometheusStack: false },
-    overlay: {
+    base: {
+      enableHolmesGPT: true,
+      enablePrometheusStack: false,
       globalConfig: { signing_key: "{{ env.ROBUSTA_SIGNING_KEY }}", account_id: "{{ env.ROBUSTA_ACCOUNT_ID }}", prometheus_url: `http://mimir-gateway.${NS}.svc/prometheus` },
-      runner: { additional_env_vars: [{ name: "ROBUSTA_SIGNING_KEY", valueFrom: { secretKeyRef: { name: "robusta", key: "signing-key" } } }] },
-      holmes: { additional_env_vars: [{ name: "MODEL", value: model[llm] }, { name: "LLM_API_KEY", valueFrom: { secretKeyRef: { name: "robusta", key: "llm-api-key" } } }] },
+      sinksConfig,
+      disabledPlaybooks,
+      namedCustomPlaybooks,
+      runner: {
+        additional_env_vars: [
+          secretEnv("ROBUSTA_SIGNING_KEY", "signing-key"),
+          ...(sink === "slack" ? [secretEnv("SLACK_API_KEY", "slack-api-key")] : sink === "msteams" ? [secretEnv("MSTEAMS_WEBHOOK_URL", "msteams-webhook-url")] : []),
+        ],
+      },
+      holmes: { additional_env_vars: [{ name: "MODEL", value: model[llm] }, secretEnv("LLM_API_KEY", "llm-api-key")] },
     },
+    overlay: { clusterName: c.name },
   };
 }
 
@@ -546,28 +588,36 @@ const DROP_UNDEFINED = (v: unknown): unknown => JSON.parse(JSON.stringify(v));
 
 export function helmFiles(cfg: PlannerConfig, central: CentralCluster[], ids: ComponentId[]): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const baseDone = new Set<string>();
 
-  for (const c of central) {
-    const standbyNote = c.role === "standby" ? " STANDBY: reads the replicated storage; deployed only on failover." : "";
-    for (const id of ids) {
-      const build = BUILDERS[id];
-      if (!build) continue;
-      if (id === "alertmanager" && (cfg.components.alertmanager.options.type === "mimir" || cfg.components.alertmanager.options.placement === "remote")) continue;
-      // c.cfg is this cluster's view: its region, its storage names, its share of the volumes.
+  for (const id of ids) {
+    const build = BUILDERS[id];
+    if (!build || !central.length) continue;
+    if (id === "alertmanager" && cfg.components.alertmanager.options.type === "mimir") continue;
+    // c.cfg is each cluster's view: its region, its storage names, its share of the volumes.
+    const full = (c: CentralCluster) => {
       const { base, overlay } = build(c.cfg, c);
-      if (!baseDone.has(id)) {
-        files.push(yamlFile(`helm/base/${id}/values.yaml`, `${id}: settings shared by every environment`, DROP_UNDEFINED(base) as Values));
-        baseDone.add(id);
-      }
+      return DROP_UNDEFINED(mergeValues(base, overlay)) as Values;
+    };
+    const fulls = central.map(full);
+    // Everything that doesn't depend on the environment goes to helm/base (see split.ts).
+    let probe: Values[] = [];
+    try {
+      probe = [full(probeCluster(central[0]))];
+    } catch {
+      /* fall back to comparing the real clusters only */
+    }
+    const base = commonValues([...fulls, ...probe]);
+    files.push(yamlFile(`helm/base/${id}/values.yaml`, `${id}: settings shared by every environment and region (the cluster files below only add what differs)`, base));
+    central.forEach((c, i) => {
+      const standbyNote = c.role === "standby" ? " STANDBY: reads the replicated storage; deployed only on failover." : "";
       files.push(
         yamlFile(
           `helm/central/${c.dir}/${id}/values.yaml`,
-          `${id} on ${c.name}: sizing, storage and environment-specific settings.${standbyNote} ${["mimir", "loki", "tempo", "pyroscope"].includes(id) ? cloudIdentityNote(cfg) : ""}`,
-          DROP_UNDEFINED(overlay) as Values,
+          `${id} on ${c.name}: sizing, storage and environment-specific settings (applied on top of helm/base/${id}).${standbyNote} ${["mimir", "loki", "tempo", "pyroscope"].includes(id) ? cloudIdentityNote(cfg) : ""}`,
+          valuesDiff(fulls[i], base),
         ),
       );
-    }
+    });
   }
 
   // Remote clusters: collectors, one overlay per group (same environment and region).
