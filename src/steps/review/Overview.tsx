@@ -9,6 +9,7 @@ import { effectiveReplication, isMultiRegion, regionInfo } from "../../model/reg
 import type { OptionValue, PlannerConfig } from "../../model/types";
 import { deriveInputs } from "../../sizing/inputs";
 import { shareUrl } from "../../state/share";
+import { useStore } from "../../state/store";
 
 const DELIVERY: Record<string, string> = {
   argocd: "Argo CD",
@@ -69,6 +70,7 @@ function Rows({ rows }: { rows: [string, ReactNode][] }) {
 
 export function Overview({ cfg }: { cfg: PlannerConfig }) {
   const [copied, setCopied] = useState(false);
+  const { config } = useStore();
   const cloud = CLOUDS[cfg.platform.cloud];
   const multiEnv = cfg.environments.length > 1;
   const comps = relevantComponents(cfg);
@@ -78,7 +80,8 @@ export function Overview({ cfg }: { cfg: PlannerConfig }) {
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(shareUrl(cfg));
+      // The user's answers (not the resolved defaults), so the link only carries what was changed.
+      await navigator.clipboard.writeText(shareUrl(config));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -92,7 +95,7 @@ export function Overview({ cfg }: { cfg: PlannerConfig }) {
         <button type="button" className="btn btn-primary" onClick={copy}>
           {copied ? "Link copied ✓" : "Copy shareable link"}
         </button>
-        <span className="muted">The link contains all your answers. Nothing is stored on a server.</span>
+        <span className="muted">The link contains your answers (only what differs from the defaults). Nothing is stored on a server.</span>
       </div>
 
       <div className="ov-grid">

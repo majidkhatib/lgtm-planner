@@ -12,14 +12,36 @@ function deepMerge(base: unknown, override: unknown): unknown {
   return out;
 }
 
-// The whole configuration lives in the URL hash (#c=...), compressed.
-// Nothing is sent to a server: the hash never leaves the browser.
+// Work in progress is saved in the browser (localStorage), so the address bar stays clean.
+// Share links put the configuration in the URL hash (#c=...): only what differs from the
+// defaults, compressed. Nothing is sent to a server: the hash never leaves the browser.
 
 const HASH_KEY = "c";
 const STORAGE_KEY = "lgtm-planner:config";
 
 export function encodeConfig(cfg: PlannerConfig): string {
   return compressToEncodedURIComponent(JSON.stringify(cfg));
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Only the values that differ from `base` (arrays are kept whole when they differ). */
+function diff(base: unknown, value: unknown): unknown {
+  if (!isPlainObject(base) || !isPlainObject(value)) return same(base, value) ? undefined : value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    const d = diff(base[k], v);
+    if (d !== undefined) out[k] = d;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Short form for share links: the changes against the defaults that decodeConfig merges onto. */
+export function encodeShare(cfg: PlannerConfig): string {
+  const base = defaultConfig();
+  for (const env of cfg.environments) base.volumes[env] ??= defaultVolumes(env);
+  const changes = (diff(base, cfg) ?? {}) as Record<string, unknown>;
+  return compressToEncodedURIComponent(JSON.stringify({ ...changes, schema: 1 }));
 }
 
 export function decodeConfig(encoded: string): PlannerConfig | null {
@@ -43,6 +65,8 @@ export function decodeConfig(encoded: string): PlannerConfig | null {
 export function loadInitialConfig(): PlannerConfig {
   const fromHash = new URLSearchParams(location.hash.slice(1)).get(HASH_KEY);
   if (fromHash) {
+    // A shared link: load it, then clean the address bar (the config is saved in the browser from now on).
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
     const cfg = decodeConfig(fromHash);
     if (cfg) return cfg;
   }
@@ -59,17 +83,15 @@ export function loadInitialConfig(): PlannerConfig {
 }
 
 export function persistConfig(cfg: PlannerConfig): void {
-  const encoded = encodeConfig(cfg);
-  history.replaceState(null, "", `${location.pathname}${location.search}#${HASH_KEY}=${encoded}`);
   try {
-    localStorage.setItem(STORAGE_KEY, encoded);
+    localStorage.setItem(STORAGE_KEY, encodeConfig(cfg));
   } catch {
     /* storage unavailable */
   }
 }
 
 export function shareUrl(cfg: PlannerConfig): string {
-  return `${location.origin}${location.pathname}#${HASH_KEY}=${encodeConfig(cfg)}`;
+  return `${location.origin}${location.pathname}#${HASH_KEY}=${encodeShare(cfg)}`;
 }
 
 export function clearSaved(): void {
