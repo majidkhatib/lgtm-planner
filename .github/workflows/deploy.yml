@@ -1,0 +1,64 @@
+# Tests, builds and publishes the planner to https://m-shahidi.com/lgtm-planner/
+#
+# Needs (repository settings → Secrets and variables → Actions → Variables):
+#   AWS_DEPLOY_ROLE_ARN         role created by the website's Terraform (github-deploy-lgtm-planner)
+#   SITE_BUCKET                 the website's S3 bucket
+#   CLOUDFRONT_DISTRIBUTION_ID  the website's CloudFront distribution
+name: Deploy planner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Needed for GitHub's OIDC token (keyless login to AWS).
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-planner
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Log in to AWS (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      # Files in assets/ have a content hash in their name, so they can be cached for a year.
+      # index.html must always be fresh, otherwise browsers keep loading old asset names.
+      - name: Upload to S3
+        run: |
+          aws s3 sync dist/ "s3://${{ vars.SITE_BUCKET }}/lgtm-planner/" \
+            --delete \
+            --exclude "index.html" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp dist/index.html "s3://${{ vars.SITE_BUCKET }}/lgtm-planner/index.html" \
+            --cache-control "no-cache"
+
+      - name: Clear CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/lgtm-planner/*"

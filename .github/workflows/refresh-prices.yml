@@ -1,0 +1,42 @@
+# Refreshes src/data/prices.json from the cloud providers' price lists once a month
+# and opens a pull request with the changes (review and merge it yourself).
+#
+# Needs:
+#   vars.AWS_PRICING_ROLE_ARN  IAM role trusted for this repo via GitHub OIDC, allowed: pricing:GetProducts
+#   secrets.GCP_API_KEY        API key restricted to the Cloud Billing API (optional: without it GCP is skipped)
+name: Refresh cloud prices
+
+on:
+  schedule:
+    - cron: "0 6 3 * *" # 06:00 UTC on the 3rd of every month
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  prices:
+    # Skipped until the pricing role is set up (see "Needs" above).
+    if: vars.AWS_PRICING_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PRICING_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Fetch prices
+        env:
+          GCP_API_KEY: ${{ secrets.GCP_API_KEY }}
+        run: node scripts/fetch-prices.mjs
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          branch: chore/refresh-prices
+          title: "Refresh cloud prices"
+          commit-message: "Refresh cloud prices"
+          body: "Monthly refresh of src/data/prices.json (Azure Retail Prices API, AWS Price List API, GCP Billing Catalog, ECB EUR rate)."
