@@ -278,3 +278,16 @@ button { font: inherit; }
 .assumptions { margin: 0; padding-left: 18px; color: var(--muted); font-size: 0.88rem; }
 .assumptions li { margin-bottom: 4px; }
 .input-limit { width: 130px; }
+
+/* Welcome screen */
+.intro { max-width: 72ch; }
+.intro-lead { font-size: 1.08rem; line-height: 1.6; margin-top: 0; }
+.intro-h { font-size: 1.05rem; margin: 24px 0 8px; }
+.intro-steps, .intro-notes { margin: 0; padding-left: 20px; line-height: 1.6; }
+.intro-steps li, .intro-notes li { margin-bottom: 6px; }
+.intro-results { display: grid; gap: 8px; margin: 0; }
+.intro-results > div { display: grid; grid-template-columns: 110px 1fr; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.intro-results dt { font: 600 0.85rem var(--font-mono); color: var(--accent-strong); }
+.intro-results dd { margin: 0; line-height: 1.5; }
+.intro-start { margin-top: 24px; }
+@media (max-width: 560px) { .intro-results > div { grid-template-columns: 1fr; gap: 2px; } }

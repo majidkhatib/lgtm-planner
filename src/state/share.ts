@@ -16,7 +16,7 @@ function deepMerge(base: unknown, override: unknown): unknown {
 // Share links put the configuration in the URL hash (#c=...): only what differs from the
 // defaults, compressed. Nothing is sent to a server: the hash never leaves the browser.
 
-const HASH_KEY = "c";
+export const HASH_KEY = "c";
 const STORAGE_KEY = "lgtm-planner:config";
 
 export function encodeConfig(cfg: PlannerConfig): string {

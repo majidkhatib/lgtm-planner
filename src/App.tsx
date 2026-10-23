@@ -5,8 +5,14 @@ import { ConnectivityStep, TenancyStep } from "./steps/network";
 import { RegionsStep } from "./steps/regions";
 import { DeliveryStep, EnvironmentsStep, PlatformStep, SignalsStep, TopologyStep } from "./steps/basics";
 import { ComponentStep } from "./steps/ComponentStep";
+import { IntroStep } from "./steps/intro";
 import { ReviewStep } from "./steps/ReviewStep";
+import { HASH_KEY } from "./state/share";
 import { useStore } from "./state/store";
+
+// Read before the store loads a shared link and cleans the address bar:
+// someone opening a shared plan wants the result, not the welcome screen.
+const OPENED_SHARED_LINK = new URLSearchParams(location.hash.slice(1)).has(HASH_KEY);
 
 interface Step {
   key: string;
@@ -17,8 +23,10 @@ interface Step {
   done?: boolean;
 }
 
-function buildSteps(components: ComponentDef[], answered: (id: ComponentDef["id"]) => boolean): Step[] {
+function buildSteps(components: ComponentDef[], answered: (id: ComponentDef["id"]) => boolean,
+                    start: () => void): Step[] {
   return [
+    { key: "intro", section: "Start", title: "What this planner does", render: () => <IntroStep onStart={start} /> },
     { key: "platform", section: "Setup", title: "Cloud & region", render: () => <PlatformStep /> },
     { key: "regions", section: "Setup", title: "Multi-region", render: () => <RegionsStep /> },
     { key: "delivery", section: "Setup", title: "Delivery method", render: () => <DeliveryStep /> },
@@ -40,14 +48,17 @@ function buildSteps(components: ComponentDef[], answered: (id: ComponentDef["id"
 
 export default function App() {
   const { config, resolved, reset } = useStore();
-  // ?step=<key> opens a specific step (e.g. ?step=component:mimir)
-  const [currentKey, setCurrentKey] = useState(() => new URLSearchParams(location.search).get("step") ?? "platform");
+  // ?step=<key> opens a specific step (e.g. ?step=component:mimir); a shared link opens the result.
+  const [currentKey, setCurrentKey] = useState(
+    () => new URLSearchParams(location.search).get("step") ?? (OPENED_SHARED_LINK ? "review" : "intro"),
+  );
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
 
   const steps = useMemo(
-    () => buildSteps(relevantComponents(resolved), (id) => config.components[id].enabled !== undefined),
+    () => buildSteps(relevantComponents(resolved), (id) => config.components[id].enabled !== undefined,
+                     () => go("platform")), // `go` only uses setters and a ref, so it needn't be a dependency
     [resolved, config.components],
   );
 
